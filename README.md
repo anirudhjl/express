@@ -1,45 +1,63 @@
-const express = require('express');
 const http = require('http');
 
-const app = express();
-app.use(express.json());
+const PROXY_PORT = 8080;
 
-// Manual proxy to n8n without any external library
-app.post('/api/chat', (req, res) => {
-  const body = JSON.stringify(req.body || {});
-
-  const options = {
-    hostname: '127.0.0.1',
-    port: 5678,
-    path: '/webhook/data',
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(body)
+// Simple JSON helper
+function readJson(req, callback) {
+  let data = '';
+  req.on('data', chunk => data += chunk);
+  req.on('end', () => {
+    try {
+      callback(JSON.parse(data || '{}'));
+    } catch {
+      callback({});
     }
-  };
+  });
+}
 
-  const proxyReq = http.request(options, (proxyRes) => {
-    let data = '';
-    proxyRes.on('data', chunk => (data += chunk));
-    proxyRes.on('end', () => {
-      try {
-        res.set('Content-Type', 'application/json');
-        res.status(proxyRes.statusCode).send(data);
-      } catch (err) {
-        res.status(500).json({ error: 'Bad JSON from n8n' });
-      }
+const server = http.createServer((req, res) => {
+  if (req.method === 'POST' && req.url === '/api/chat') {
+
+    readJson(req, body => {
+      const out = JSON.stringify(body || {});
+
+      const options = {
+        hostname: '127.0.0.1',
+        port: 5678,
+        path: '/webhook/data',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(out)
+        }
+      };
+
+      const forward = http.request(options, r => {
+        let responseData = '';
+        r.on('data', chunk => responseData += chunk);
+        r.on('end', () => {
+          res.writeHead(r.statusCode || 200, {
+            'Content-Type': 'application/json'
+          });
+          res.end(responseData);
+        });
+      });
+
+      forward.on('error', err => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      });
+
+      forward.write(out);
+      forward.end();
     });
-  });
 
-  proxyReq.on('error', (err) => {
-    res.status(500).json({ error: err.message });
-  });
-
-  proxyReq.write(body);
-  proxyReq.end();
+  } else {
+    res.writeHead(404);
+    res.end('Not Found');
+  }
 });
 
-app.listen(8080, () => {
-  console.log('Proxy running on 8080');
+server.listen(PROXY_PORT, () => {
+  console.log('Pure Node proxy running on', PROXY_PORT);
 });
