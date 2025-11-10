@@ -1,17 +1,45 @@
 const express = require('express');
-const { createProxyMiddleware } = require('http-proxy-middleware');
+const http = require('http');
 
 const app = express();
 app.use(express.json());
 
-// Proxy browser -> n8n(localhost)
-app.use('/api/chat', createProxyMiddleware({
-  target: 'http://127.0.0.1:5678',
-  changeOrigin: false,
-  pathRewrite: { '^/api/chat': '/webhook/data' },
-}));
+// Manual proxy to n8n without any external library
+app.post('/api/chat', (req, res) => {
+  const body = JSON.stringify(req.body || {});
 
-// Simple health check
-app.get('/health', (_req, res) => res.json({ ok: true }));
+  const options = {
+    hostname: '127.0.0.1',
+    port: 5678,
+    path: '/webhook/data',
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body)
+    }
+  };
 
-app.listen(8080, () => console.log('Proxy listening on 8080'));
+  const proxyReq = http.request(options, (proxyRes) => {
+    let data = '';
+    proxyRes.on('data', chunk => (data += chunk));
+    proxyRes.on('end', () => {
+      try {
+        res.set('Content-Type', 'application/json');
+        res.status(proxyRes.statusCode).send(data);
+      } catch (err) {
+        res.status(500).json({ error: 'Bad JSON from n8n' });
+      }
+    });
+  });
+
+  proxyReq.on('error', (err) => {
+    res.status(500).json({ error: err.message });
+  });
+
+  proxyReq.write(body);
+  proxyReq.end();
+});
+
+app.listen(8080, () => {
+  console.log('Proxy running on 8080');
+});
